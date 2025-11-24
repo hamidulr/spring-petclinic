@@ -1,0 +1,71 @@
+name: CI-CD-PetClinic
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  build:
+    runs-on: self-hosted
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+
+    # -------------------------------
+    # Code Build using Maven
+    # -------------------------------
+    - name: Build with Maven
+      run: |
+        ./mvnw clean package -DskipTests
+
+    # -------------------------------
+    # Code Scan using SonarQube
+    # -------------------------------
+    - name: SonarQube Scan
+      env:
+        SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      run: |
+        ./mvnw sonar:sonar \
+            -Dsonar.projectKey=petclinic \
+            -Dsonar.host.url=${{ secrets.SONAR_HOST_URL }} \
+            -Dsonar.login=$SONAR_TOKEN
+
+    # -------------------------------
+    # Build Docker Image
+    # -------------------------------
+    - name: Build Docker Image
+      run: |
+        docker build -t ghcr.io/${{ secrets.GHCR_USERNAME }}/petclinic:latest .
+
+    # -------------------------------
+    # Scan Image with Trivy
+    # -------------------------------
+    - name: Trivy Scan
+      run: |
+        trivy image --no-progress \
+         --exit-code 0 \
+         --severity HIGH,CRITICAL \
+         ghcr.io/${{ secrets.GHCR_USERNAME }}/petclinic:latest
+
+    # -------------------------------
+    # Push Docker Image to GHCR
+    # -------------------------------
+    - name: Login to GHCR
+      run: echo "${{ secrets.GHCR_TOKEN }}" | docker login ghcr.io -u ${{ secrets.GHCR_USERNAME }} --password-stdin
+
+    - name: Push Image
+      run: docker push ghcr.io/${{ secrets.GHCR_USERNAME }}/petclinic:latest
+
+    # -------------------------------
+    # Deploy to Kubernetes Cluster
+    # -------------------------------
+    - name: Setup Kubeconfig
+      run: |
+        echo "${{ secrets.KUBECONFIG }}" | base64 -d > kubeconfig
+        export KUBECONFIG=$PWD/kubeconfig
+
+    - name: Deploy Application
+      run: |
+        sed -i "s|ghcr.io/REPLACE_ME|ghcr.io/${{ secrets.GHCR_USERNAME }}|" .k8s/deployment.yaml
+        kubectl apply -f .k8s/deployment.yaml
+        kubectl apply -f .k8s/service.yaml
